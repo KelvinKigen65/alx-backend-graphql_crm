@@ -1,11 +1,7 @@
-"""
-URL configuration for alx-backend-graphql_crm project.
-"""
-
 from django.contrib import admin
-from django.urls import path, include
-from django.views.decorators.csrf import csrf_exempt
+from django.urls import path
 from graphene_django.views import GraphQLView
+from django.views.decorators.csrf import csrf_exempt
 
 urlpatterns = [
     path('admin/', admin.site.urls),
