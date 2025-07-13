@@ -47,6 +47,12 @@ class OrderInput(graphene.InputObjectType):
     order_date = graphene.DateTime()
 
 
+# Report Input Type
+class ReportInput(graphene.InputObjectType):
+    start_date = graphene.DateTime()
+    end_date = graphene.DateTime()
+
+
 # Mutation Response Types
 class CustomerMutationResponse(graphene.ObjectType):
     customer = graphene.Field(CustomerType)
@@ -71,7 +77,64 @@ class OrderMutationResponse(graphene.ObjectType):
     errors = graphene.List(graphene.String)
 
 
-# Mutations
+class ReportResponse(graphene.ObjectType):
+    success = graphene.Boolean()
+    message = graphene.String()
+    report_path = graphene.String()
+
+
+# New Mutations
+class UpdateLowStockProducts(graphene.Mutation):
+    class Arguments:
+        pass
+        
+    products = graphene.List(ProductType)
+    message = graphene.String()
+
+    def mutate(self, info):
+        low_stock = Product.objects.filter(stock__lt=10)
+        updated = []
+        for product in low_stock:
+            product.stock += 10
+            product.save()
+            updated.append(product)
+            
+        return UpdateLowStockProducts(
+            products=updated,
+            message=f"Updated {len(updated)} products"
+        )
+
+
+class GenerateCRMReport(graphene.Mutation):
+    class Arguments:
+        input = ReportInput(required=False)
+
+    Output = ReportResponse
+
+    def mutate(self, info, input=None):
+        from .tasks import generate_crm_report
+        
+        try:
+            # Trigger Celery task
+            task = generate_crm_report.delay(
+                start_date=input.start_date if input else None,
+                end_date=input.end_date if input else None
+            )
+            
+            return ReportResponse(
+                success=True,
+                message="Report generation started",
+                report_path=f"/tmp/crm_report_log.txt (Task ID: {task.id})"
+            )
+        except Exception as e:
+            return ReportResponse(
+                success=False,
+                message=str(e),
+                report_path=None
+            )
+
+
+# Existing Mutations
 class CreateCustomer(graphene.Mutation):
     class Arguments:
         input = CustomerInput(required=True)
@@ -243,6 +306,12 @@ class Query(graphene.ObjectType):
     all_products = DjangoFilterConnectionField(ProductType, filterset_class=ProductFilter)
     all_orders = DjangoFilterConnectionField(OrderType, filterset_class=OrderFilter)
     
+    # Report status query
+    report_status = graphene.Field(
+        ReportResponse,
+        task_id=graphene.String(required=True)
+    )
+    
     # Single object queries
     customer = graphene.Field(CustomerType, id=graphene.ID())
     product = graphene.Field(ProductType, id=graphene.ID())
@@ -266,6 +335,29 @@ class Query(graphene.ObjectType):
         except Order.DoesNotExist:
             return None
 
+    def resolve_report_status(self, info, task_id):
+        from celery.result import AsyncResult
+        
+        task = AsyncResult(task_id)
+        if task.ready():
+            if task.successful():
+                return ReportResponse(
+                    success=True,
+                    message="Report generation completed",
+                    report_path="/tmp/crm_report_log.txt"
+                )
+            else:
+                return ReportResponse(
+                    success=False,
+                    message=str(task.result),
+                    report_path=None
+                )
+        return ReportResponse(
+            success=None,
+            message="Report generation in progress",
+            report_path=None
+        )
+
 
 # Mutations
 class Mutation(graphene.ObjectType):
@@ -273,3 +365,8 @@ class Mutation(graphene.ObjectType):
     bulk_create_customers = BulkCreateCustomers.Field()
     create_product = CreateProduct.Field()
     create_order = CreateOrder.Field()
+    update_low_stock_products = UpdateLowStockProducts.Field()
+    generate_crm_report = GenerateCRMReport.Field()
+
+
+schema = graphene.Schema(query=Query, mutation=Mutation)
